@@ -7,12 +7,13 @@ import { authAPI, deviceAPI, faceAPI } from "@/lib/api";
  */
 export async function fetchUserDetails(userId: string) {
   try {
-    const response = await authAPI.getUserbyId(userId);
-    return {
-      id: response.data.data._id,
-      name: response.data.data.name,
-      email: response.data.data.email
-    };
+    // const response = await authAPI.getUserbyId(userId);
+    // return {
+    //   id: response.data.data._id,
+    //   name: response.data.data.name,
+    //   email: response.data.data.email
+    // };
+    return null
   } catch (error) {
     console.error('Error fetching user:', error);
     return null;
