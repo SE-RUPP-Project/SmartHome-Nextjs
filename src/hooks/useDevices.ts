@@ -1,38 +1,43 @@
+// frontend-shadcn/src/hooks/useDevices.ts
+
 'use client';
 
-import { useEffect, useCallback } from 'react';
-import { useDeviceStore } from '@/stores/deviceStore';
+import { useState, useCallback } from 'react';
 import { deviceAPI } from '@/lib/api';
 
 export function useDevices() {
-  const { devices, setDevices, updateDevice } = useDeviceStore();
+  const [devices, setDevices] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
 
   const fetchDevices = useCallback(async () => {
     try {
+      setLoading(true);
       const response = await deviceAPI.getAll();
       setDevices(response.data.data);
+      console.log('Devices fetched:', response.data.data);
     } catch (error) {
       console.error('Error fetching devices:', error);
+    } finally {
+      setLoading(false);
     }
-  }, [setDevices]);
+  }, []);
 
-  const controlDevice = useCallback(async (
-    deviceId: string,
-    action: string,
-    params?: any
-  ) => {
+  const controlDevice = async (deviceId: string, action: string, parameters?: any) => {
     try {
-      const response = await deviceAPI.control(deviceId, action, params);
-      updateDevice(deviceId, response.data.data);
+      await deviceAPI.control(deviceId, action, parameters);
+      await fetchDevices();
+      // State will be updated via WebSocket
     } catch (error) {
-      console.error('Error controlling device:', error);
+      console.error('Control error:', error);
       throw error;
     }
-  }, [updateDevice]);
+  };
 
-  useEffect(() => {
-    fetchDevices();
-  }, [fetchDevices]);
-
-  return { devices, fetchDevices, controlDevice };
+  return {
+    devices,
+    setDevices,  // ✅ Export setDevices for WebSocket updates
+    loading,
+    fetchDevices,
+    controlDevice
+  };
 }

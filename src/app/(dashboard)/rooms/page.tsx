@@ -25,7 +25,7 @@ interface Room {
 
 export default function RoomsPage() {
   const router = useRouter();
-  const { isAuthenticated } = useAuthStore();
+  const { isAuthenticated, user } = useAuthStore();
   const [rooms, setRooms] = useState<Room[]>([]);
   const [devices, setDevices] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -34,6 +34,9 @@ export default function RoomsPage() {
   const [selectedRoom, setSelectedRoom] = useState<string>('');
   const [selectedDevice, setSelectedDevice] = useState<string>('');
   const [newRoomName, setNewRoomName] = useState('');
+
+  const canControl = user?.role === 'admin' || user?.role === 'family';
+  const isAdmin = user?.role === 'admin';
 
   useEffect(() => {
     fetchData();
@@ -69,6 +72,9 @@ export default function RoomsPage() {
 
   const handleDeleteRoom = async (roomId: string) => {
     if (!confirm('Are you sure you want to delete this room?')) return;
+    if(devices.filter(d => d.room_id === roomId).length > 0) {
+      return alert('Cannot delete room with assigned devices');
+    }
     try {
       await roomAPI.delete(roomId);
       await fetchData();
@@ -81,7 +87,7 @@ export default function RoomsPage() {
   const handleAssignDevice = async () => {
     if (!selectedRoom || !selectedDevice) return;
     try {
-      await roomAPI.update(selectedRoom, selectedDevice);
+      await deviceAPI.update(selectedDevice, { room_id: selectedRoom });
       await fetchData();
       setAssignDialogOpen(false);
       setSelectedRoom('');
@@ -115,92 +121,94 @@ export default function RoomsPage() {
           <h1 className="text-3xl font-bold">Rooms</h1>
           <p className="text-muted-foreground">Organize your devices by room</p>
         </div>
-        <div className="flex gap-2">
-          <Dialog open={assignDialogOpen} onOpenChange={setAssignDialogOpen}>
-            <DialogTrigger asChild>
-              <Button variant="outline">Assign Device</Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Assign Device to Room</DialogTitle>
-              </DialogHeader>
-              <div className="space-y-4 py-4">
-                <div>
-                  <Label>Select Room</Label>
-                  <Select value={selectedRoom} onValueChange={setSelectedRoom}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Choose a room" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {rooms.map(room => (
-                        <SelectItem key={room._id} value={room._id}>
-                          {room.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label>Select Device</Label>
-                  <Select value={selectedDevice} onValueChange={setSelectedDevice}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Choose a device" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {unassignedDevices.map(device => (
-                        <SelectItem key={device._id} value={device._id}>
-                          {device.name} ({device.device_type})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setAssignDialogOpen(false)}>
-                  Cancel
-                </Button>
-                <Button onClick={handleAssignDevice}>
-                  Assign
-                </Button>
-              </DialogFooter>
-            </DialogContent>
-          </Dialog>
-
-          <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
-            <DialogTrigger asChild>
-              <Button>
-                <Plus className="w-4 h-4 mr-2" />
-                Add Room
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
-                <DialogTitle>Add New Room</DialogTitle>
-              </DialogHeader>
-              <form onSubmit={handleAddRoom}>
+        {isAdmin && (
+          <div className="flex gap-2">
+            <Dialog open={assignDialogOpen} onOpenChange={setAssignDialogOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline">Assign Device</Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Assign Device to Room</DialogTitle>
+                </DialogHeader>
                 <div className="space-y-4 py-4">
                   <div>
-                    <Label htmlFor="roomName">Room Name</Label>
-                    <Input
-                      id="roomName"
-                      value={newRoomName}
-                      onChange={(e) => setNewRoomName(e.target.value)}
-                      placeholder="Living Room"
-                      required
-                    />
+                    <Label>Select Room</Label>
+                    <Select value={selectedRoom} onValueChange={setSelectedRoom}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Choose a room" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {rooms.map(room => (
+                          <SelectItem key={room._id} value={room._id}>
+                            {room.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <Label>Select Device</Label>
+                    <Select value={selectedDevice} onValueChange={setSelectedDevice}>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Choose a device" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {unassignedDevices.map(device => (
+                          <SelectItem key={device._id} value={device._id}>
+                            {device.name} ({device.device_type})
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </div>
                 </div>
                 <DialogFooter>
-                  <Button type="button" variant="outline" onClick={() => setAddDialogOpen(false)}>
+                  <Button variant="outline" onClick={() => setAssignDialogOpen(false)}>
                     Cancel
                   </Button>
-                  <Button type="submit">Add Room</Button>
+                  <Button onClick={handleAssignDevice}>
+                    Assign
+                  </Button>
                 </DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
-        </div>
+              </DialogContent>
+            </Dialog>
+
+            <Dialog open={addDialogOpen} onOpenChange={setAddDialogOpen}>
+              <DialogTrigger asChild>
+                <Button>
+                  <Plus className="w-4 h-4 mr-2" />
+                  Add Room
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Add New Room</DialogTitle>
+                </DialogHeader>
+                <form onSubmit={handleAddRoom}>
+                  <div className="space-y-4 py-4">
+                    <div>
+                      <Label htmlFor="roomName">Room Name</Label>
+                      <Input
+                        id="roomName"
+                        value={newRoomName}
+                        onChange={(e) => setNewRoomName(e.target.value)}
+                        placeholder="Living Room"
+                        required
+                      />
+                    </div>
+                  </div>
+                  <DialogFooter>
+                    <Button type="button" variant="outline" onClick={() => setAddDialogOpen(false)}>
+                      Cancel
+                    </Button>
+                    <Button type="submit">Add Room</Button>
+                  </DialogFooter>
+                </form>
+              </DialogContent>
+            </Dialog>
+          </div>
+        )}
       </div>
 
       {/* Rooms Grid */}
@@ -217,13 +225,15 @@ export default function RoomsPage() {
                       {roomDevices.length} device{roomDevices.length !== 1 ? 's' : ''}
                     </p>
                   </div>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    onClick={() => handleDeleteRoom(room._id)}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
+                  {isAdmin && (
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={() => handleDeleteRoom(room._id)}
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </Button>
+                  )}
                 </div>
               </CardHeader>
               <CardContent>
@@ -258,10 +268,12 @@ export default function RoomsPage() {
         <Card>
           <CardContent className="text-center py-12">
             <p className="text-muted-foreground mb-4">No rooms yet</p>
-            <Button onClick={() => setAddDialogOpen(true)}>
-              <Plus className="w-4 h-4 mr-2" />
-              Add Your First Room
-            </Button>
+            {isAdmin && (
+              <Button onClick={() => setAddDialogOpen(true)}>
+                <Plus className="w-4 h-4 mr-2" />
+                Add Your First Room
+              </Button>
+            )}
           </CardContent>
         </Card>
       )}
@@ -288,6 +300,14 @@ export default function RoomsPage() {
             </div>
           </CardContent>
         </Card>
+      )}
+
+      {!isAdmin && (
+        <div className="mt-8 p-4 bg-muted rounded-lg text-center">
+          <p className="text-sm text-muted-foreground">
+            View only - Contact admin to add or manage rooms
+          </p>
+        </div>
       )}
     </div>
   );

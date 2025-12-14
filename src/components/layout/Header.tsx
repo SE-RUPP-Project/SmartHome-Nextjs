@@ -16,7 +16,7 @@ export function Header() {
 
   return (
     <header className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
-      <div className="container mx-auto px-4 h-16 flex items-center justify-between">
+      <div className="w-full mx-auto px-6 h-16 flex items-center justify-between">
         <div className="flex items-center space-x-3">
           <Home className="w-8 h-8 text-primary" />
           <div>
@@ -25,7 +25,7 @@ export function Header() {
           </div>
         </div>
         <div className="flex items-center space-x-4">
-          <span className="text-sm">Hi, {user?.name}!</span>
+          {/* <span className="text-sm">Hi, {user?.name}!</span> */}
           <Button variant="ghost" size="icon" onClick={handleLogout}>
             <LogOut className="w-4 h-4" />
           </Button>

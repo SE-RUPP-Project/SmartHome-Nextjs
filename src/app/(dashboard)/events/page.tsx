@@ -18,6 +18,7 @@ interface Event {
   severity: 'info' | 'warning' | 'error' | 'critical';
   metadata?: any;
   created_at: string;
+  timestamp: Date;
 }
 
 export default function EventsPage() {
@@ -128,7 +129,7 @@ export default function EventsPage() {
                       {event.description}
                     </CardDescription>
                     <p className="text-xs text-muted-foreground mt-2">
-                      {formatDate(event.created_at)}
+                      {formatDate(event.timestamp)}
                     </p>
                   </div>
                 </div>

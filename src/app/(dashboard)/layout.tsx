@@ -1,26 +1,62 @@
 'use client';
 
+import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Header } from '@/components/layout/Header';
 import { Sidebar } from '@/components/layout/Sidebar';
-import { useWebSocket } from '@/hooks/useWebSocket';
-import { useAuthGuard } from '@/hooks/useAuthGuard';
-import { useDeviceStore } from '@/stores/deviceStore';
+import { useAuthStore } from '@/stores/authStore';
+import { api } from '@/lib/api';
 
-export default function DashboardLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
-  const { isAuthenticated, isLoading } = useAuthGuard();
-  const updateDevice = useDeviceStore((state) => state.updateDevice);
+export default function DashboardLayout({ children }: { children: React.ReactNode }) {
+  const router = useRouter();
+  const { token, login, logout, user } = useAuthStore();
+  const [loading, setLoading] = useState(true);
+  const [hydrated, setHydrated] = useState(false);
 
-  useWebSocket((data) => {
-    if (data.type === 'device_update') {
-      updateDevice(data.device_id, data.updates);
-    }
-  });
+  // Wait for Zustand to rehydrate
+  useEffect(() => {
+    setHydrated(true);
+  }, []);
 
-  if (isLoading) {
+  useEffect(() => {
+    if (!hydrated) return; // Wait for rehydration
+
+    const initAuth = async () => {
+      const storedToken = token || localStorage.getItem('token');
+      
+      if (!storedToken) {
+        router.push('/login');
+        return;
+      }
+
+      // Fetch user if not in store
+      if (!user) {
+        try {
+          const response = await api.get('/api/users/me');
+          if (response.data.success) {
+            const userData = response.data.data;
+            login(storedToken, {
+              id: userData._id,
+              name: userData.name,
+              email: userData.email,
+              role: userData.role,
+            });
+          }
+        } catch (error) {
+          console.error('Auth failed:', error);
+          logout();
+          router.push('/login');
+          return;
+        }
+      }
+
+      setLoading(false);
+    };
+
+    initAuth();
+  }, [hydrated, token, user]);
+
+  if (!hydrated || loading) {
     return (
       <div className="flex h-screen items-center justify-center">
         <div className="text-center">
@@ -31,18 +67,12 @@ export default function DashboardLayout({
     );
   }
 
-  if (!isAuthenticated) {
-    return null;
-  }
-
   return (
     <div className="flex h-screen flex-col">
       <Header />
       <div className="flex flex-1 overflow-hidden">
         <Sidebar />
-        <main className="flex-1 overflow-y-auto">
-          {children}
-        </main>
+        <main className="flex-1 overflow-y-auto">{children}</main>
       </div>
     </div>
   );

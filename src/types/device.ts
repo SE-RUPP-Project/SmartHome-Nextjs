@@ -17,8 +17,8 @@ export interface DeviceState {
   smoke_level?: number;
   is_raining?: boolean;
   rain_intensity?: number;
-  last_rain_detected?: string;
-  rack_position?: 'extended' | 'retracted' | 'stopped';
+  rain_detected?: string;
+  rack_state?: 'extended' | 'retracted' | 'stopped';
 }
 
 export interface Device {
@@ -30,7 +30,7 @@ export interface Device {
   user_id: string;
   status: 'online' | 'offline';
   state: DeviceState;
-  mqtt_topic: string;
+  mqtt_topic?: string;
   is_active: boolean;
   last_updated: string;
   created_at: string;

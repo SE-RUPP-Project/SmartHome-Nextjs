@@ -13,11 +13,13 @@ import { authAPI } from '@/lib/api';
 // import { Input } from "@/components/ui/input"
 // import { Label } from "@/components/ui/label"
 
-export default function LoginPage() {
+export default function RegisterPage() {
   const router = useRouter();
   const login = useAuthStore((state) => state.login);
+  const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [phone, setPhone] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -27,28 +29,32 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
-      const response = await authAPI.login({ email, password });
+      const response = await authAPI.register({ 
+        name, 
+        email, 
+        password, 
+        phone, 
+        // role: 'family' 
+      });
       const { token, data, refreshToken } = response.data.data;
-      // console.log("response");
-      
       
       login(token, data, refreshToken);
       router.push('/dashboard');
     } catch (err: any) {
-      setError(err.response?.data?.message || 'Login failed');
+      setError(err.response?.data?.message || 'Registration failed');
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center ">
+    <div className="min-h-screen flex items-center justify-center">
       {/* Using shadcn/ui Card - uncomment after running npx shadcn add */}
       {/* 
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle className="text-2xl">Welcome Back</CardTitle>
-          <CardDescription>Sign in to your smart home</CardDescription>
+          <CardTitle className="text-2xl">Create Account</CardTitle>
+          <CardDescription>Sign up for your smart home</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -57,6 +63,18 @@ export default function LoginPage() {
                 {error}
               </div>
             )}
+
+            <div className="space-y-2">
+              <Label htmlFor="name">Full Name</Label>
+              <Input
+                id="name"
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="John Doe"
+                required
+              />
+            </div>
 
             <div className="space-y-2">
               <Label htmlFor="email">Email Address</Label>
@@ -71,11 +89,23 @@ export default function LoginPage() {
             </div>
 
             <div className="space-y-2">
+              <Label htmlFor="phone">Phone Number</Label>
+              <Input
+                id="phone"
+                type="tel"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+                placeholder="+1 (555) 000-0000"
+                required
+              />
+            </div>
+
+            <div className="space-y-2">
               <Label htmlFor="password">Password</Label>
               <Input
                 id="password"
                 type="password"
-                value={email}
+                value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 placeholder="••••••••"
                 required
@@ -83,14 +113,14 @@ export default function LoginPage() {
             </div>
 
             <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? 'Signing in...' : 'Sign In'}
+              {loading ? 'Creating account...' : 'Create Account'}
             </Button>
           </form>
 
           <p className="text-center text-sm text-muted-foreground mt-4">
-            Don't have an account?{' '}
-            <Link href="/register" className="text-primary hover:underline">
-              Sign up
+            Already have an account?{' '}
+            <Link href="/login" className="text-primary hover:underline">
+              Sign in
             </Link>
           </p>
         </CardContent>
@@ -100,8 +130,8 @@ export default function LoginPage() {
       {/* Temporary placeholder until shadcn/ui components are added */}
       <div className="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-md">
         <div className="mb-6">
-          <h1 className="text-2xl font-bold">Welcome Back</h1>
-          <p className="text-gray-600">Sign in to your smart home</p>
+          <h1 className="text-2xl font-bold">Create Account</h1>
+          <p className="text-gray-600">Sign up for your smart home</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -110,6 +140,18 @@ export default function LoginPage() {
               {error}
             </div>
           )}
+
+          <div>
+            <label className="block text-sm font-medium mb-2">Full Name</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+              placeholder="John Doe"
+              required
+            />
+          </div>
 
           <div>
             <label className="block text-sm font-medium mb-2">Email</label>
@@ -124,6 +166,18 @@ export default function LoginPage() {
           </div>
 
           <div>
+            <label className="block text-sm font-medium mb-2">Phone Number</label>
+            <input
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+              placeholder="+1 (555) 000-0000"
+            //   required
+            />
+          </div>
+
+          <div>
             <label className="block text-sm font-medium mb-2">Password</label>
             <input
               type="password"
@@ -131,6 +185,7 @@ export default function LoginPage() {
               onChange={(e) => setPassword(e.target.value)}
               className="w-full px-4 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
               placeholder="••••••••"
+              
               required
             />
           </div>
@@ -140,17 +195,16 @@ export default function LoginPage() {
             disabled={loading}
             className="w-full bg-blue-600 text-white py-2 rounded-lg hover:bg-blue-700 disabled:opacity-50"
           >
-            {loading ? 'Signing in...' : 'Sign In'}
+            {loading ? 'Creating account...' : 'Create Account'}
           </button>
         </form>
 
         <p className="text-center text-sm text-gray-600 mt-4">
-          Don't have an account?{' '}
-          <Link href="/register" className="text-blue-600 hover:underline">
-            Sign up
+          Already have an account?{' '}
+          <Link href="/login" className="text-blue-600 hover:underline">
+            Sign in
           </Link>
         </p>
-
       </div>
     </div>
   );
