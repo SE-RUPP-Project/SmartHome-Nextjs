@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Optional: only runs if you have "lint" script in package.json
+      - name: Lint
+        run: npm run lint --if-present
+
+      # Optional: only runs if you have "typecheck" script in package.json
+      - name: Typecheck
+        run: npm run typecheck --if-present
+
+      - name: Build
+        env:
+          # Provide dummy values so build doesn't fail in CI if your code reads env at build-time.
+          # Adjust if your build needs real values.
+          NEXT_PUBLIC_API_URL: "http://127.0.0.1:4000"
+          NEXT_PUBLIC_WS_URL: "http://127.0.0.1:3009"
+          NEXT_PUBLIC_APP_NAME: "Smart Home Dashboard"
+        run: npm run build

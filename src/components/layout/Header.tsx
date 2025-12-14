@@ -20,7 +20,7 @@ export function Header() {
         <div className="flex items-center space-x-3">
           <Home className="w-8 h-8 text-primary" />
           <div>
-            <h1 className="text-xl font-bold">Smart Home</h1>
+            <h1 className="text-xl font-bold">Smart Home Hello SE</h1>
             <p className="text-xs text-muted-foreground">Dashboard</p>
           </div>
         </div>
