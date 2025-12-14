@@ -11,7 +11,7 @@ export const metadata: Metadata = {
   title: 'Smart Home Dashboard',
   description: 'Complete smart home control with shadcn/ui',
   icons: {
-    icon: "/icon.png",
+    icon: "home.png",
   },
 };
 
