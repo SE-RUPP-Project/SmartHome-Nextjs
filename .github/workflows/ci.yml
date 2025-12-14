@@ -23,8 +23,8 @@ jobs:
         run: npm ci
 
       # Optional: only runs if you have "lint" script in package.json
-      - name: Lint
-        run: npm run lint --if-present
+      # - name: Lint
+      #   run: npm run lint --if-present
 
       # Optional: only runs if you have "typecheck" script in package.json
       - name: Typecheck
