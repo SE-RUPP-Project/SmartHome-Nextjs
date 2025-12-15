@@ -398,15 +398,7 @@ export default function DevicesPage() {
                     {device.state.motion_detected ? 'Motion Detected' : 'No Motion'}
                   </div>
                   
-                  {/* <Button
-                    variant={device.state.motion_armed_mode ? 'destructive' : 'default'}
-                    className="w-full"
-                    onClick={() => controlDevice(device._id, device.state.motion_armed_mode ? 'armed_mode' : 'no_armed_mode')}
-                    disabled={device.status !== 'online' || !canControl}
-                  >
-                  {/* {device.state.is_locked ? <Unlock className="w-4 h-4 mr-2" /> : <Lock className="w-4 h-4 mr-2" />} */}
-                    {device.state.motion_armed_mode ? 'Open Armed Mode' : 'Disabled Armed Mode'}
-                  {/* </Button>  */}
+
                   
                 </div>
               )}
