@@ -391,13 +391,7 @@ export default function DevicesPage() {
                   )}
                 </div>
               )}
-
-              {device.device_type === 'motion_sensor' && (
-                <div className="text-center py-4">
-                  <div className="text-xl font-semibold text-primary">
-                    {device.state.motion_detected ? 'Motion Detected' : 'No Motion'}
-                  </div>
-                  {/* <Button
+              {/* <Button
                   variant={device.state.motion_armed_mode ? 'destructive' : 'default'}
                   className="w-full"
                   onClick={() => controlDevice(device._id, device.state.motion_armed_mode ? 'armed_mode' : 'no_armed_mode')}
@@ -405,6 +399,12 @@ export default function DevicesPage() {
                 >
                   {device.state.motion_armed_mode ? 'Open Armed Mode' : 'Disabled Armed Mode'}
                 </Button> */}
+
+              {device.device_type === 'motion_sensor' && (
+                <div className="text-center py-4">
+                  <div className="text-xl font-semibold text-primary">
+                    {device.state.motion_detected ? 'Motion Detected' : 'No Motion'}
+                  </div>
                 </div>
               )}
 
