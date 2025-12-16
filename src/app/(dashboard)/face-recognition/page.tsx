@@ -3,8 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { faceAPI, deviceAPI, roomAPI, authAPI, userAPI } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
-import { Camera, Plus, Trash2, User, Check, X, Lock, Upload, DoorOpen, MapPin, Loader2, RefreshCw, ArrowRight } from 'lucide-react';
-
+import { Camera, Plus, Trash2, User, Check, X, Lock, Upload, DoorOpen, MapPin, Loader2, RefreshCw, ArrowRight, AlertTriangle } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
@@ -64,6 +63,18 @@ interface RecognitionResult {
   message?: string;
 }
 
+interface LivenessResult {
+  isLive: boolean;
+  confidence: number;
+  checks: {
+    hasMovement: boolean;
+    isSharp: boolean;
+    isWellLit: boolean;
+    hasFace: boolean;
+  };
+  message: string;
+}
+
 export default function FaceRecognitionPage() {
   const { user } = useAuthStore();
   const { devices, fetchDevices } = useDevices();
@@ -88,15 +99,20 @@ export default function FaceRecognitionPage() {
   // Data States
   const [loading, setLoading] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
-  const [selectedUser, setSelectedUser] = useState<string>('');
+  const [selectedUser, setSelectedUser] = useState('');
   const [selectedRooms, setSelectedRooms] = useState<string[]>([]);
-  const [selectedVerifyRoom, setSelectedVerifyRoom] = useState<string>('');
+  const [selectedVerifyRoom, setSelectedVerifyRoom] = useState('');
 
   // Capture States
   const [capturedImage, setCapturedImage] = useState<Blob | null>(null);
   const [capturedImageUrl, setCapturedImageUrl] = useState<string | null>(null);
   const [recognitionResult, setRecognitionResult] = useState<RecognitionResult | null>(null);
   const [selectedDoors, setSelectedDoors] = useState<string[]>([]);
+
+  // Liveness Detection States
+  const [isCheckingLiveness, setIsCheckingLiveness] = useState(false);
+  const [livenessResult, setLivenessResult] = useState<LivenessResult | null>(null);
+  const [previousFrames, setPreviousFrames] = useState<ImageData[]>([]);
 
   // Refs
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -120,7 +136,6 @@ export default function FaceRecognitionPage() {
 
   useEffect(() => {
     let timer: NodeJS.Timeout;
-
     if (isRecognizeDialogOpen && verifyStep === 'scanning') {
       timer = setTimeout(() => startCamera(true), 100);
     } else if (isAddDialogOpen && enrollStep === 'capture') {
@@ -139,17 +154,161 @@ export default function FaceRecognitionPage() {
     };
   }, [isRecognizeDialogOpen, isAddDialogOpen, isEditDialogOpen, verifyStep, enrollStep]);
 
+  // CLIENT-SIDE LIVENESS DETECTION
+  const performClientSideLivenessCheck = async (imageBlob: Blob): Promise<LivenessResult> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+
+      img.onload = () => {
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx?.drawImage(img, 0, 0);
+
+        const imageData = ctx?.getImageData(0, 0, canvas.width, canvas.height);
+        if (!imageData) {
+          resolve({
+            isLive: false,
+            confidence: 0,
+            checks: { hasMovement: false, isSharp: false, isWellLit: false, hasFace: false },
+            message: 'Failed to analyze image'
+          });
+          return;
+        }
+
+        // Check 1: Sharpness (Laplacian variance)
+        const isSharp = checkSharpness(imageData);
+
+        // Check 2: Lighting
+        const isWellLit = checkLighting(imageData);
+
+        // Check 3: Movement detection (compare with previous frames)
+        const hasMovement = checkMovement(imageData);
+
+        // Check 4: Basic face detection (check for skin tones)
+        const hasFace = checkForFace(imageData);
+
+        // Calculate confidence
+        const checksArray = [hasMovement, isSharp, isWellLit, hasFace];
+        const passedChecks = checksArray.filter(Boolean).length;
+        const confidence = (passedChecks / checksArray.length) * 100;
+
+        const isLive = passedChecks >= 3; // At least 3 out of 4 checks must pass
+
+        resolve({
+          isLive,
+          confidence,
+          checks: { hasMovement, isSharp, isWellLit, hasFace },
+          message: isLive ? 'Live person detected' : 'Possible spoofing detected'
+        });
+
+        // Store frame for movement detection
+        setPreviousFrames(prev => [...prev.slice(-4), imageData]);
+      };
+
+      img.src = URL.createObjectURL(imageBlob);
+    });
+  };
+
+  const checkSharpness = (imageData: ImageData): boolean => {
+    const data = imageData.data;
+    const width = imageData.width;
+    const height = imageData.height;
+
+    // Convert to grayscale and calculate Laplacian
+    let laplacianSum = 0;
+    let count = 0;
+
+    for (let y = 1; y < height - 1; y++) {
+      for (let x = 1; x < width - 1; x++) {
+        const idx = (y * width + x) * 4;
+        const gray = 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+
+        // Simple Laplacian kernel
+        const neighbors = [
+          0.299 * data[((y-1) * width + x) * 4] + 0.587 * data[((y-1) * width + x) * 4 + 1] + 0.114 * data[((y-1) * width + x) * 4 + 2],
+          0.299 * data[((y+1) * width + x) * 4] + 0.587 * data[((y+1) * width + x) * 4 + 1] + 0.114 * data[((y+1) * width + x) * 4 + 2],
+          0.299 * data[(y * width + x - 1) * 4] + 0.587 * data[(y * width + x - 1) * 4 + 1] + 0.114 * data[(y * width + x - 1) * 4 + 2],
+          0.299 * data[(y * width + x + 1) * 4] + 0.587 * data[(y * width + x + 1) * 4 + 1] + 0.114 * data[(y * width + x + 1) * 4 + 2]
+        ];
+
+        const laplacian = Math.abs(4 * gray - neighbors.reduce((a, b) => a + b, 0));
+        laplacianSum += laplacian * laplacian;
+        count++;
+      }
+    }
+
+    const variance = laplacianSum / count;
+    return variance > 100; // Threshold for sharpness
+  };
+
+  const checkLighting = (imageData: ImageData): boolean => {
+    const data = imageData.data;
+    let sum = 0;
+
+    for (let i = 0; i < data.length; i += 4) {
+      const brightness = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2];
+      sum += brightness;
+    }
+
+    const avgBrightness = sum / (data.length / 4);
+    return avgBrightness > 40 && avgBrightness < 220;
+  };
+
+  const checkMovement = (imageData: ImageData): boolean => {
+    if (previousFrames.length < 2) return true; // Not enough frames yet
+
+    const currentData = imageData.data;
+    const previousData = previousFrames[previousFrames.length - 1].data;
+
+    let differenceSum = 0;
+    let count = 0;
+
+    for (let i = 0; i < currentData.length; i += 40) { // Sample every 10th pixel
+      const currentBrightness = 0.299 * currentData[i] + 0.587 * currentData[i + 1] + 0.114 * currentData[i + 2];
+      const previousBrightness = 0.299 * previousData[i] + 0.587 * previousData[i + 1] + 0.114 * previousData[i + 2];
+      differenceSum += Math.abs(currentBrightness - previousBrightness);
+      count++;
+    }
+
+    const avgDifference = differenceSum / count;
+    // Some movement is expected (2-30), but too much means video replay
+    return avgDifference > 2 && avgDifference < 50;
+  };
+
+  const checkForFace = (imageData: ImageData): boolean => {
+    const data = imageData.data;
+    let skinPixels = 0;
+    let totalPixels = 0;
+
+    // Simple skin tone detection (YCbCr color space approximation)
+    for (let i = 0; i < data.length; i += 40) { // Sample pixels
+      const r = data[i];
+      const g = data[i + 1];
+      const b = data[i + 2];
+
+      // Simplified skin tone detection
+      const isSkin = (
+        r > 95 && g > 40 && b > 20 &&
+        r > g && r > b &&
+        Math.abs(r - g) > 15 &&
+        Math.max(r, g, b) - Math.min(r, g, b) > 15
+      );
+
+      if (isSkin) skinPixels++;
+      totalPixels++;
+    }
+
+    const skinRatio = skinPixels / totalPixels;
+    return skinRatio > 0.1 && skinRatio < 0.6; // Face should have some skin tone pixels
+  };
+
   const handleEditFace = async () => {
     if (!editFace || (!capturedImage) || selectedRooms.length === 0) {
       alert('Please make changes before saving');
       return;
     }
-
-    // Validate at least one door scan is selected
-    // if (selectedRooms.length === 0) {
-    //   alert('Please select at least one door scan');
-    //   return;
-    // }
 
     setLoading(true);
     try {
@@ -157,9 +316,7 @@ export default function FaceRecognitionPage() {
       if (capturedImage) {
         formData.append('image', capturedImage, 'face.jpg');
       }
-      // if (selectedRooms.length > 0) {
       formData.append('allowed_rooms', JSON.stringify(selectedRooms));
-      // }
 
       await faceAPI.updateFace(editFace.face_id, formData);
       await fetchFaces();
@@ -167,9 +324,9 @@ export default function FaceRecognitionPage() {
       setEditFace(null);
       resetCapture();
       setSelectedRooms([]);
-      alert('✅ Face updated successfully!');
+      toast.success('Face updated successfully!');
     } catch (error: any) {
-      alert(error.response?.data?.message || 'Failed to update face');
+      toast.error(error.response?.data?.message || 'Failed to update face');
     } finally {
       setLoading(false);
     }
@@ -195,7 +352,6 @@ export default function FaceRecognitionPage() {
     }
   };
 
-
   const fetchRooms = async () => {
     try {
       const response = await roomAPI.getAll();
@@ -204,6 +360,7 @@ export default function FaceRecognitionPage() {
       console.error('Error fetching door scans:', error);
     }
   };
+
   const fetchDoorScans = async () => {
     try {
       await fetchDevices();
@@ -231,16 +388,13 @@ export default function FaceRecognitionPage() {
 
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-
         if (autoScan) {
           setTimeout(() => startScanning(), 1000);
         }
       }
     } catch (error: any) {
       console.error('Error accessing camera:', error);
-
       let errorMessage = 'Failed to access camera. ';
-
       if (error.name === 'NotAllowedError' || error.name === 'PermissionDeniedError') {
         errorMessage += 'Camera permission was denied. Please allow camera access in your browser settings and try again.';
       } else if (error.name === 'NotFoundError' || error.name === 'DevicesNotFoundError') {
@@ -250,8 +404,7 @@ export default function FaceRecognitionPage() {
       } else {
         errorMessage += 'Please check your camera settings and try again.';
       }
-
-      alert(errorMessage);
+      toast.error(errorMessage);
     }
   };
 
@@ -261,15 +414,15 @@ export default function FaceRecognitionPage() {
       tracks.forEach(track => track.stop());
       videoRef.current.srcObject = null;
     }
+    setPreviousFrames([]); // Reset frames when camera stops
   };
 
   const startScanning = () => {
     if (isScanningRef.current) return;
-
     setIsScanning(true);
     isScanningRef.current = true;
     setRecognitionResult(null);
-
+    setLivenessResult(null);
     scanLoop();
   };
 
@@ -282,12 +435,29 @@ export default function FaceRecognitionPage() {
     if (!isScanningRef.current || !videoRef.current) return;
 
     const blob = await captureFrameToBlob();
-
     if (blob) {
       try {
+        // First, perform client-side liveness check
+        setIsCheckingLiveness(true);
+        const livenessCheck = await performClientSideLivenessCheck(blob);
+        setIsCheckingLiveness(false);
+        setLivenessResult(livenessCheck);
+
+        if (!livenessCheck.isLive) {
+          console.log(`⚠️ Liveness check failed (${livenessCheck.confidence.toFixed(1)}% confidence)`);
+          if (isScanningRef.current) {
+            setTimeout(scanLoop, 1000);
+          }
+          return;
+        }
+
+        console.log(`✅ Liveness check passed (${livenessCheck.confidence.toFixed(1)}% confidence)`);
+
+        // If live, proceed with face verification
         const formData = new FormData()
         formData.append('image', blob, 'scan.jpg');
         if (selectedVerifyRoom) formData.append('room_id', selectedVerifyRoom);
+
         const token = localStorage.getItem('token');
         if (token) formData.append('auth_token', token);
 
@@ -296,7 +466,6 @@ export default function FaceRecognitionPage() {
 
         if (result.matched) {
           stopScanning();
-
           setRecognitionResult(result);
           setCapturedImageUrl(URL.createObjectURL(blob));
 
@@ -306,25 +475,18 @@ export default function FaceRecognitionPage() {
             const firstDoorId = firstDoor._id;
             setSelectedDoors([firstDoorId]);
 
-            // Show loading state
             setLoading(true);
 
-            // Automatically control the door based on its current state
             setTimeout(async () => {
               try {
-                console.log("JSON", JSON.stringify(firstDoor));
-                
                 const action = firstDoor?.state?.is_locked == true ? 'unlock' : 'lock';
-
                 console.log(`🔐 Attempting to ${action} door: ${firstDoor?.name}`);
 
                 await deviceAPI.control(firstDoorId, action);
-
                 console.log(`✅ Door ${action}ed successfully!`);
                 toast.success(`Door ${action}ed successfully!`);
                 await fetchDoorScans()
 
-                // Update the result with the new door state
                 setRecognitionResult(prev => {
                   if (!prev) return prev;
                   return {
@@ -337,14 +499,14 @@ export default function FaceRecognitionPage() {
                   };
                 });
 
-                // Close dialog after showing success message
                 setTimeout(() => {
                   setIsRecognizeDialogOpen(false);
                   resetVerifyDialog();
-                }, 3000); // Changed from 2000 to 3000 to give more time to see the result
+                }, 3000);
+
               } catch (error) {
                 console.error('❌ Auto door control failed:', error);
-                alert('Failed to control door automatically');
+                toast.error('Failed to control door automatically');
               } finally {
                 setLoading(false);
               }
@@ -355,9 +517,11 @@ export default function FaceRecognitionPage() {
       } catch (error: any) {
         if (error.response?.status === 404 || error.response?.data?.message?.includes('not found')) {
           stopScanning();
-          setRecognitionResult({ matched: false, message: 'Face not recognized. Please try again or enroll your face first.' });
+          setRecognitionResult({
+            matched: false,
+            message: 'Face not recognized. Please try again or enroll your face first.'
+          });
           setCapturedImageUrl(URL.createObjectURL(blob));
-
           setTimeout(() => {
             resetAndRestartScan();
           }, 3000);
@@ -393,27 +557,53 @@ export default function FaceRecognitionPage() {
   const handleManualCapture = async () => {
     const blob = await captureFrameToBlob();
     if (blob) {
-      setCapturedImage(blob);
-      setCapturedImageUrl(URL.createObjectURL(blob));
-      stopScanning();
+      setIsCheckingLiveness(true);
+      toast.info('Checking for live person...');
+
+      const livenessCheck = await performClientSideLivenessCheck(blob);
+      setIsCheckingLiveness(false);
+      setLivenessResult(livenessCheck);
+
+      if (livenessCheck.isLive) {
+        setCapturedImage(blob);
+        setCapturedImageUrl(URL.createObjectURL(blob));
+        stopScanning();
+        toast.success(`Live person detected! (${livenessCheck.confidence.toFixed(1)}% confidence)`);
+      } else {
+        toast.error(`Spoofing detected! (${livenessCheck.confidence.toFixed(1)}% confidence) - ${livenessCheck.message}`);
+      }
     }
   };
 
-  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (file) {
-      setCapturedImage(file);
-      setCapturedImageUrl(URL.createObjectURL(file));
-      stopScanning();
-      stopCamera();
+      setIsCheckingLiveness(true);
+      toast.info('Checking for live person...');
+
+      const livenessCheck = await performClientSideLivenessCheck(file);
+      setIsCheckingLiveness(false);
+      setLivenessResult(livenessCheck);
+
+      if (livenessCheck.isLive) {
+        setCapturedImage(file);
+        setCapturedImageUrl(URL.createObjectURL(file));
+        stopScanning();
+        stopCamera();
+        toast.success(`Live person detected! (${livenessCheck.confidence.toFixed(1)}% confidence)`);
+      } else {
+        toast.error(`Spoofing detected! (${livenessCheck.confidence.toFixed(1)}% confidence) - ${livenessCheck.message}`);
+        event.target.value = '';
+      }
     }
   };
 
   const handleEnrollFace = async () => {
     if (!capturedImage || !selectedUser || selectedRooms.length === 0) {
-      alert('Please select a user, capture an image, and select at least one door');
+      toast.error('Please select a user, capture an image, and select at least one door');
       return;
     }
+
     setLoading(true);
     try {
       const formData = new FormData();
@@ -425,9 +615,9 @@ export default function FaceRecognitionPage() {
       await fetchFaces();
       setIsAddDialogOpen(false);
       resetEnrollForm();
-      alert('✅ Face enrolled successfully!');
+      toast.success('Face enrolled successfully!');
     } catch (error: any) {
-      alert(error.response?.data?.message || 'Failed to enroll face');
+      toast.error(error.response?.data?.message || 'Failed to enroll face');
     } finally {
       setLoading(false);
     }
@@ -435,18 +625,18 @@ export default function FaceRecognitionPage() {
 
   const handleUnlockDoors = async () => {
     if (selectedDoors.length === 0) return;
+
     setLoading(true);
     try {
-      // Get the door's current state and toggle it
       const door = recognitionResult?.available_doors?.find((d: DoorLock) => d._id === selectedDoors[0]);
       const action = door?.is_locked ? 'unlock' : 'lock';
 
       await deviceAPI.control(selectedDoors[0], action);
-      alert(`✅ Door ${action}ed successfully!`);
+      toast.success(`Door ${action}ed successfully!`);
       setIsRecognizeDialogOpen(false);
       resetVerifyDialog();
     } catch (error: any) {
-      alert('Failed to control door');
+      toast.error('Failed to control door');
     } finally {
       setLoading(false);
     }
@@ -454,12 +644,14 @@ export default function FaceRecognitionPage() {
 
   const handleDeleteFace = async () => {
     if (!deleteFaceId) return;
+
     try {
       await faceAPI.deleteFace(deleteFaceId);
       await fetchFaces();
       setDeleteFaceId(null);
+      toast.success('Face deleted successfully');
     } catch (error) {
-      alert('Failed to delete face');
+      toast.error('Failed to delete face');
     }
   };
 
@@ -468,6 +660,8 @@ export default function FaceRecognitionPage() {
     setCapturedImageUrl(null);
     setRecognitionResult(null);
     setSelectedDoors([]);
+    setLivenessResult(null);
+    setPreviousFrames([]);
     stopScanning();
   };
 
@@ -491,19 +685,23 @@ export default function FaceRecognitionPage() {
 
   const toggleRoomSelection = (roomId: string) => {
     setSelectedRooms(prev =>
-      prev.includes(roomId) ? prev.filter(id => id !== roomId) : [...prev, roomId]
+      prev.includes(roomId)
+        ? prev.filter(id => id !== roomId)
+        : [...prev, roomId]
     );
   };
 
   const toggleDoorSelection = (doorId: string) => {
     setSelectedDoors(prev =>
-      prev.includes(doorId) ? prev.filter(id => id !== doorId) : [...prev, doorId]
+      prev.includes(doorId)
+        ? prev.filter(id => id !== doorId)
+        : [...prev, doorId]
     );
   };
 
   const proceedToScanning = () => {
     if (!selectedVerifyRoom) {
-      alert('Please select a room first');
+      toast.error('Please select a room first');
       return;
     }
     setVerifyStep('scanning');
@@ -511,106 +709,130 @@ export default function FaceRecognitionPage() {
 
   const proceedToCapture = () => {
     if (!selectedUser || selectedRooms.length === 0) {
-      alert('Please select a user and at least one room');
+      toast.error('Please select a user and at least one room');
       return;
     }
     setEnrollStep('capture');
   };
 
   return (
-    <div className="container mx-auto p-8">
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-3xl font-bold">Face Recognition</h1>
-          <p className="text-muted-foreground">AI-powered facial recognition for door access</p>
-        </div>
-        <div className="flex space-x-2">
+    <div className="container mx-auto p-6 max-w-7xl">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Camera className="w-6 h-6" />
+            Face Recognition
+          </CardTitle>
+          <CardDescription>AI-powered facial recognition for door access</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex gap-4 mb-6">
+            <Dialog open={isRecognizeDialogOpen} onOpenChange={(open) => {
+              setIsRecognizeDialogOpen(open);
+              if (!open) {
+                resetVerifyDialog();
+              }
+            }}>
+              <DialogTrigger asChild>
+                <Button>
+                  <Camera className="w-4 h-4 mr-2" />
+                  Verify Face
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle>Face Verification</DialogTitle>
+                  <DialogDescription>
+                    {verifyStep === 'room-select'
+                      ? 'Select a room to verify access'
+                      : isScanning
+                        ? 'Position your face in the camera'
+                        : 'Verification complete'}
+                  </DialogDescription>
+                </DialogHeader>
 
-          {/* VERIFY FACE DIALOG */}
-          <Dialog open={isRecognizeDialogOpen} onOpenChange={(open) => {
-            setIsRecognizeDialogOpen(open);
-            if (!open) { resetVerifyDialog(); }
-          }}>
-            <DialogTrigger asChild>
-              <Button variant="outline">
-                <Camera className="w-4 h-4 mr-2" />
-                Verify Face
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle>Face Verification</DialogTitle>
-                <DialogDescription>
-                  {verifyStep === 'room-select' ? 'Select a room to verify access' : isScanning ? 'Position your face in the camera' : 'Verification complete'}
-                </DialogDescription>
-              </DialogHeader>
-
-              {verifyStep === 'room-select' ? (
-                <div className="space-y-4 py-4">
-                  <div className="space-y-2">
+                {verifyStep === 'room-select' ? (
+                  <div className="space-y-4">
                     <Label>Select Door Scan</Label>
-                    <Select value={selectedVerifyRoom} onValueChange={setSelectedVerifyRoom}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Choose a door scan to verify access" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {doorScans.map(door => (
-                          <SelectItem key={door._id} value={door._id}>
-                            <div className="flex items-center gap-2">
-                              <DoorOpen className="w-4 h-4" />
-                              {door.name}
-                              {
-                                rooms.find(r => r._id === door?.room_id)?.name && (
-                                  <span className="text-xs text-muted-foreground">({rooms.find(r => r._id === door?.room_id)?.name})</span>
-                                )
-                              }
-                            </div>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <div className="space-y-2 max-h-64 overflow-y-auto">
+                      {doorScans.map(door => (
+                        <div
+                          key={door._id}
+                          onClick={() => setSelectedVerifyRoom(door._id)}
+                          className={`p-4 rounded-lg border-2 cursor-pointer transition-all ${selectedVerifyRoom === door._id
+                            ? 'border-primary bg-primary/10'
+                            : 'border-gray-200 hover:border-gray-300'
+                            }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <DoorOpen className="w-4 h-4" />
+                            {door.name}
+                            {rooms.find(r => r._id === door?.room_id)?.name && (
+                              <span className="text-sm text-muted-foreground">
+                                ({rooms.find(r => r._id === door?.room_id)?.name})
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <Button onClick={proceedToScanning} className="w-full">
+                      <ArrowRight className="w-4 h-4 mr-2" />
+                      Continue to Scan
+                    </Button>
                   </div>
-
-                  <Button onClick={proceedToScanning} className="w-full" disabled={!selectedVerifyRoom}>
-                    Continue to Scan
-                    <ArrowRight className="w-4 h-4 ml-2" />
-                  </Button>
-                </div>
-              ) : (
-                <Tabs defaultValue="camera" className="w-full">
-                  <TabsContent value="camera" className="space-y-4">
+                ) : (
+                  <div className="space-y-4">
                     {!recognitionResult ? (
-                      <div className="relative bg-black rounded-lg overflow-hidden min-h-[400px] flex items-center justify-center">
+                      <div className="relative">
                         <video
                           ref={videoRef}
                           autoPlay
                           playsInline
                           muted
-                          className="w-full h-full object-cover"
+                          className="w-full rounded-lg bg-black"
                         />
+                        <canvas ref={canvasRef} className="hidden" />
+                        
+                        {/* Liveness Check Indicator */}
+                        {isCheckingLiveness && (
+                          <div className="absolute top-4 left-4 bg-blue-500 text-white px-3 py-1 rounded-full text-sm flex items-center gap-2">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Checking liveness...
+                          </div>
+                        )}
+
+                        {livenessResult && !livenessResult.isLive && (
+                          <div className="absolute top-4 left-4 bg-red-500 text-white px-3 py-1 rounded-full text-sm flex items-center gap-2">
+                            <AlertTriangle className="w-4 h-4" />
+                            Spoofing detected
+                          </div>
+                        )}
 
                         {isScanning && (
-                          <>
-                            <div className="absolute inset-0 border-2 border-primary/50 rounded-lg pointer-events-none z-10"></div>
-                            <div className="absolute top-0 left-0 w-full h-1 bg-green-500 shadow-[0_0_15px_rgba(34,197,94,0.8)] animate-scan z-20 opacity-80"></div>
-                            <div className="absolute bottom-4 left-0 right-0 text-center z-30">
-                              <Badge variant="secondary" className="animate-pulse bg-black/50 text-white backdrop-blur-md">
-                                <Loader2 className="w-3 h-3 mr-2 animate-spin" />
-                                Scanning...
-                              </Badge>
-                            </div>
-                          </>
+                          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                            <div className="border-4 border-green-500 rounded-lg w-64 h-64 animate-pulse"></div>
+                          </div>
+                        )}
+                        
+                        {isScanning && (
+                          <div className="absolute bottom-4 left-1/2 -translate-x-1/2 bg-green-500 text-white px-4 py-2 rounded-full">
+                            <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
+                            Scanning...
+                          </div>
                         )}
 
                         {!isScanning && !capturedImageUrl && (
-                          <Button onClick={() => startScanning()} className="absolute z-30">
+                          <Button
+                            onClick={() => startScanning()}
+                            className="absolute bottom-4 left-1/2 -translate-x-1/2 z-30">
                             Start Scanning
                           </Button>
                         )}
                       </div>
                     ) : (
                       <VerificationResult
-                        imageUrl={capturedImageUrl || ''}
+                        imageUrl={capturedImageUrl}
                         result={recognitionResult}
                         selectedDoors={selectedDoors}
                         onToggleDoor={toggleDoorSelection}
@@ -619,223 +841,276 @@ export default function FaceRecognitionPage() {
                         loading={loading}
                       />
                     )}
-                  </TabsContent>
-                </Tabs>
-              )}
-              <canvas ref={canvasRef} style={{ display: 'none' }} />
-            </DialogContent>
-          </Dialog>
+                  </div>
+                )}
+              </DialogContent>
+            </Dialog>
 
-          {/* ENROLL FACE DIALOG */}
-          <Dialog open={isAddDialogOpen} onOpenChange={(open) => {
-            setIsAddDialogOpen(open);
-            if (!open) resetEnrollForm();
-          }}>
-            <DialogTrigger asChild>
-              <Button>
-                <Plus className="w-4 h-4 mr-2" />
-                Enroll Face
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-              <DialogHeader>
-                <DialogTitle>Enroll New Face</DialogTitle>
-                <DialogDescription>
-                  {enrollStep === 'user-select' ? 'Select user and allowed doors scan' : 'Capture face image'}
-                </DialogDescription>
-              </DialogHeader>
+            <Dialog open={isAddDialogOpen} onOpenChange={(open) => {
+              setIsAddDialogOpen(open);
+              if (!open) resetEnrollForm();
+            }}>
+              <DialogTrigger asChild>
+                <Button variant="outline">
+                  <Plus className="w-4 h-4 mr-2" />
+                  Enroll Face
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="max-w-2xl">
+                <DialogHeader>
+                  <DialogTitle>Enroll New Face</DialogTitle>
+                  <DialogDescription>
+                    {enrollStep === 'user-select'
+                      ? 'Select user and allowed doors scan'
+                      : 'Capture face image'}
+                  </DialogDescription>
+                </DialogHeader>
 
-              {enrollStep === 'user-select' ? (
-                <div className="space-y-4 py-4">
-
-                  <div className="space-y-2">
-                    <Label>Select User</Label>
-                    <Select value={selectedUser} onValueChange={setSelectedUser}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Choose a user" />
-                      </SelectTrigger>
-                      <SelectContent>
+                {enrollStep === 'user-select' ? (
+                  <div className="space-y-4">
+                    <div>
+                      <Label>Select User</Label>
+                      <div className="space-y-2 max-h-48 overflow-y-auto mt-2">
                         {users?.map(user => (
-                          <SelectItem key={user._id} value={user._id}>
-                            <div>
-                              <p className="font-medium">{user.name}</p>
-                              <p className="text-xs text-muted-foreground">{user.email}</p>
-                            </div>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label>Allowed Door Scans</Label>
-                    <div className="border rounded-lg p-4 space-y-2 max-h-[300px] overflow-y-auto">
-                      {doorScans.map(door => (
-                        <div
-                          key={door._id}
-                          className="flex items-center justify-between p-2 hover:bg-accent rounded cursor-pointer"
-                          onClick={() => toggleRoomSelection(door._id)}
-                        >
-                          <div className="flex items-center gap-2">
-                            <Checkbox
-                              checked={selectedRooms.includes(door._id)}
-                              onCheckedChange={() => toggleRoomSelection(door._id)}
-                            />
-                            <DoorOpen className="w-4 h-4 text-muted-foreground" />
-                            <div>
-                              <span>{door.name}</span>
-                              {
-                                door?.room_id && (
-                                  <span className="text-xs text-muted-foreground">({rooms.find(r => r._id === door?.room_id)?.name})</span>
-                                )
-                              }
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                    <p className="text-xs text-muted-foreground">
-                      {selectedRooms.length} door scan(s) selected
-                    </p>
-                  </div>
-
-                  {/* <div className="space-y-2">
-                      <Label>Allowed Doors Scan</Label>
-                      <div className="border rounded-lg p-4 space-y-2 max-h-[300px] overflow-y-auto">
-                        {rooms.map(room => (
                           <div
-                            key={room._id}
-                            className="flex items-center justify-between p-2 hover:bg-accent rounded cursor-pointer"
-                            onClick={() => toggleRoomSelection(room._id)}
+                            key={user._id}
+                            onClick={() => setSelectedUser(user._id)}
+                            className={`p-3 rounded-lg border-2 cursor-pointer transition-all ${selectedUser === user._id
+                              ? 'border-primary bg-primary/10'
+                              : 'border-gray-200 hover:border-gray-300'
+                              }`}
+                          >
+                            <div className="font-medium">{user.name}</div>
+                            <div className="text-sm text-muted-foreground">{user.email}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <Label>Allowed Door Scans</Label>
+                      <div className="space-y-2 max-h-48 overflow-y-auto mt-2">
+                        {doorScans.map(door => (
+                          <div
+                            key={door._id}
+                            onClick={() => toggleRoomSelection(door._id)}
+                            className={`p-3 rounded-lg border-2 cursor-pointer transition-all ${selectedRooms.includes(door._id)
+                              ? 'border-primary bg-primary/10'
+                              : 'border-gray-200 hover:border-gray-300'
+                              }`}
                           >
                             <div className="flex items-center gap-2">
                               <Checkbox
-                                checked={selectedRooms.includes(room._id)}
-                                onCheckedChange={() => toggleRoomSelection(room._id)}
+                                checked={selectedRooms.includes(door._id)}
+                                onCheckedChange={() => toggleRoomSelection(door._id)}
                               />
-                              <MapPin className="w-4 h-4 text-muted-foreground" />
-                              <span>{room.name}</span>
+                              <div className="flex-1">
+                                {door.name}
+                                {door?.room_id && (
+                                  <span className="text-sm text-muted-foreground ml-2">
+                                    ({rooms.find(r => r._id === door?.room_id)?.name})
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </div>
                         ))}
                       </div>
-                      <p className="text-xs text-muted-foreground">
-                        {selectedRooms.length} room(s) selected
+                      <p className="text-sm text-muted-foreground mt-2">
+                        {selectedRooms.length} door scan(s) selected
                       </p>
-                    </div> */}
-
-                  <Button onClick={proceedToCapture} className="w-full" disabled={!selectedUser || selectedRooms.length === 0}>
-                    Continue to Capture
-                    <ArrowRight className="w-4 h-4 ml-2" />
-                  </Button>
-                </div>
-              ) : (
-                <div className="space-y-4 py-4">
-                  <Tabs defaultValue="camera" className="w-full">
-                    <TabsList className="grid w-full grid-cols-2">
-                      <TabsTrigger value="camera">Camera</TabsTrigger>
-                      <TabsTrigger value="upload">Upload Image</TabsTrigger>
-                    </TabsList>
-
-                    <TabsContent value="camera" className="space-y-4">
-                      {!capturedImageUrl ? (
-                        <div className="relative bg-black rounded-lg overflow-hidden h-[300px]">
-                          <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-                          <Button type="button" onClick={handleManualCapture} className="absolute bottom-4 left-1/2 transform -translate-x-1/2">
-                            <Camera className="w-4 h-4 mr-2" /> Capture
-                          </Button>
-                        </div>
-                      ) : (
-                        <div className="relative">
-                          <img src={capturedImageUrl} alt="Enroll" className="w-full rounded-lg" />
-                          <Button type="button" variant="secondary" size="sm" onClick={resetCapture} className="absolute top-2 right-2">
-                            Retake
-                          </Button>
-                        </div>
-                      )}
-                    </TabsContent>
-
-                    <TabsContent value="upload" className="space-y-4">
-                      {!capturedImageUrl ? (
-                        <div className="border-2 border-dashed rounded-lg p-12 text-center">
-                          <Upload className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
-                          <Input ref={fileInputRef} type="file" accept="image/*" onChange={handleFileUpload} className="max-w-xs mx-auto" />
-                        </div>
-                      ) : (
-                        <div className="relative">
-                          <img src={capturedImageUrl} alt="Enroll" className="w-full rounded-lg" />
-                          <Button type="button" variant="secondary" size="sm" onClick={resetCapture} className="absolute top-2 right-2">
-                            Change Image
-                          </Button>
-                        </div>
-                      )}
-                    </TabsContent>
-                  </Tabs>
-
-                  <canvas ref={canvasRef} style={{ display: 'none' }} />
-                  <DialogFooter>
-                    <Button variant="outline" onClick={() => setEnrollStep('user-select')}>Back</Button>
-                    <Button onClick={handleEnrollFace} disabled={loading || !capturedImage}>
-                      {loading ? 'Enrolling...' : 'Enroll Face'}
-                    </Button>
-                  </DialogFooter>
-                </div>
-              )}
-            </DialogContent>
-          </Dialog>
-        </div>
-      </div>
-
-      {/* Enrolled Faces List */}
-      {/* {JSON.stringify(users, null ,2)} */}
-      <Card>
-        <CardHeader><CardTitle>Enrolled Faces</CardTitle></CardHeader>
-        <CardContent>
-          {faces.length === 0 ? <p className="text-muted-foreground text-center py-8">No faces enrolled</p> : (
-            <div className="space-y-2">
-              {faces.map(face => (
-                <div key={face.face_id} className="flex justify-between items-center p-3 border rounded">
-                  <div className="flex items-center gap-3">
-                    <div className="bg-primary/10 p-2 rounded-full">
-                      <User className="w-4 h-4 text-primary" />
                     </div>
-                    <div>
-                      <p className="font-medium">{users.find(user => user._id === face.user_id)?.name}</p>
-                      <p className="text-xs text-muted-foreground">{users.find(user => user._id === face.user_id)?.email}</p>
-                    </div>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button variant="ghost" size="sm" onClick={() => {
-                      setViewImageFace(face);
-                      setIsViewImageDialogOpen(true);
-                    }}>
-                      <Camera className="w-4 h-4" />
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => openEditDialog(face)}>
-                      Edit
-                    </Button>
-                    <Button variant="ghost" size="sm" onClick={() => setDeleteFaceId(face.face_id)}>
-                      <Trash2 className="w-4 h-4 text-destructive" />
+
+                    <Button onClick={proceedToCapture} className="w-full">
+                      <ArrowRight className="w-4 h-4 mr-2" />
+                      Continue to Capture
                     </Button>
                   </div>
-                </div>
-              ))}
-            </div>
-          )}
+                ) : (
+                  <div className="space-y-4">
+                    <Tabs defaultValue="camera">
+                      <TabsList className="grid w-full grid-cols-2">
+                        <TabsTrigger value="camera">Camera</TabsTrigger>
+                        <TabsTrigger value="upload">Upload Image</TabsTrigger>
+                      </TabsList>
+
+                      <TabsContent value="camera" className="space-y-4">
+                        {!capturedImageUrl ? (
+                          <div className="relative">
+                            <video
+                              ref={videoRef}
+                              autoPlay
+                              playsInline
+                              muted
+                              className="w-full rounded-lg bg-black"
+                            />
+                            <canvas ref={canvasRef} className="hidden" />
+
+                            {isCheckingLiveness && (
+                              <div className="absolute top-4 left-4 bg-blue-500 text-white px-3 py-1 rounded-full text-sm flex items-center gap-2">
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                Checking liveness...
+                              </div>
+                            )}
+
+                            {livenessResult && !livenessResult.isLive && (
+                              <div className="absolute top-4 left-4 bg-red-500 text-white px-3 py-1 rounded-full text-sm flex items-center gap-2">
+                                <AlertTriangle className="w-4 h-4" />
+                                {livenessResult.message}
+                              </div>
+                            )}
+
+                            {livenessResult && livenessResult.isLive && (
+                              <div className="absolute top-4 left-4 bg-green-500 text-white px-3 py-1 rounded-full text-sm flex items-center gap-2">
+                                <Check className="w-4 h-4" />
+                                Live detected
+                              </div>
+                            )}
+
+                            <Button
+                              onClick={handleManualCapture}
+                              disabled={isCheckingLiveness}
+                              className="absolute bottom-4 left-1/2 -translate-x-1/2">
+                              <Camera className="w-4 h-4 mr-2" />
+                              Capture
+                            </Button>
+                          </div>
+                        ) : (
+                          <div className="relative">
+                            <img
+                              src={capturedImageUrl}
+                              alt="Captured"
+                              className="w-full rounded-lg"
+                            />
+                            <Button
+                              onClick={() => {
+                                resetCapture();
+                                startCamera(false);
+                              }}
+                              variant="secondary"
+                              className="absolute bottom-4 left-1/2 -translate-x-1/2">
+                              <RefreshCw className="w-4 h-4 mr-2" />
+                              Retake
+                            </Button>
+                          </div>
+                        )}
+                      </TabsContent>
+
+                      <TabsContent value="upload">
+                        {!capturedImageUrl ? (
+                          <div
+                            onClick={() => fileInputRef.current?.click()}
+                            className="border-2 border-dashed rounded-lg p-12 text-center cursor-pointer hover:border-primary transition-colors"
+                          >
+                            <Upload className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
+                            <p className="text-sm text-muted-foreground">
+                              Click to upload face image
+                            </p>
+                            <input
+                              ref={fileInputRef}
+                              type="file"
+                              accept="image/*"
+                              onChange={handleFileUpload}
+                              className="hidden"
+                            />
+                          </div>
+                        ) : (
+                          <div className="relative">
+                            <img
+                              src={capturedImageUrl}
+                              alt="Uploaded"
+                              className="w-full rounded-lg"
+                            />
+                            <Button
+                              onClick={() => {
+                                resetCapture();
+                                if (fileInputRef.current) fileInputRef.current.value = '';
+                              }}
+                              variant="secondary"
+                              className="absolute bottom-4 left-1/2 -translate-x-1/2">
+                              <Upload className="w-4 h-4 mr-2" />
+                              Change Image
+                            </Button>
+                          </div>
+                        )}
+                      </TabsContent>
+                    </Tabs>
+
+                    <DialogFooter>
+                      <Button variant="outline" onClick={() => setEnrollStep('user-select')}>Back</Button>
+                      <Button onClick={handleEnrollFace} disabled={!capturedImage || loading}>
+                        {loading ? 'Enrolling...' : 'Enroll Face'}
+                      </Button>
+                    </DialogFooter>
+                  </div>
+                )}
+              </DialogContent>
+            </Dialog>
+          </div>
+
+          <div>
+            <h3 className="text-lg font-semibold mb-4">Enrolled Faces</h3>
+            {faces.length === 0 ? (
+              <div className="text-center py-12 text-muted-foreground">
+                No faces enrolled
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {faces.map(face => (
+                  <Card key={face.face_id}>
+                    <CardHeader>
+                      <CardTitle className="text-base">
+                        {users.find(user => user._id === face.user_id)?.name}
+                      </CardTitle>
+                      <CardDescription>
+                        {users.find(user => user._id === face.user_id)?.email}
+                      </CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setViewImageFace(face);
+                            setIsViewImageDialogOpen(true);
+                          }}>
+                          <User className="w-4 h-4" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => openEditDialog(face)}>
+                          Edit
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          onClick={() => setDeleteFaceId(face.face_id)}>
+                          <Trash2 className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
 
       <AlertDialog open={!!deleteFaceId} onOpenChange={() => setDeleteFaceId(null)}>
         <AlertDialogContent>
-          <AlertDialogHeader><AlertDialogTitle>Delete Face?</AlertDialogTitle></AlertDialogHeader>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Face?</AlertDialogTitle>
+          </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDeleteFace} className="bg-destructive">Delete</AlertDialogAction>
+            <AlertDialogAction onClick={handleDeleteFace}>Delete</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* EDIT FACE DIALOG */}
       <Dialog open={isEditDialogOpen} onOpenChange={(open) => {
         setIsEditDialogOpen(open);
         if (!open) {
@@ -844,98 +1119,143 @@ export default function FaceRecognitionPage() {
           setSelectedRooms([]);
         }
       }}>
-        <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Edit Face - {users.find(user => user._id === editFace?.user_id)?.name}</DialogTitle>
+            <DialogTitle>
+              Edit Face - {users.find(user => user._id === editFace?.user_id)?.name}
+            </DialogTitle>
             <DialogDescription>Update face image or allowed doors scan</DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-4 py-4">
-            <Tabs defaultValue="image" className="w-full">
-              <TabsList className="grid w-full grid-cols-2">
-                <TabsTrigger value="image">Update Image</TabsTrigger>
-                <TabsTrigger value="rooms">Allowed Door Scans</TabsTrigger>
-              </TabsList>
+          <Tabs defaultValue="image">
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="image">Update Image</TabsTrigger>
+              <TabsTrigger value="rooms">Allowed Door Scans</TabsTrigger>
+            </TabsList>
 
-              <TabsContent value="image" className="space-y-4">
-                <Tabs defaultValue="camera" className="w-full">
-                  <TabsList className="grid w-full grid-cols-2">
-                    <TabsTrigger value="camera">Camera</TabsTrigger>
-                    <TabsTrigger value="upload">Upload</TabsTrigger>
-                  </TabsList>
+            <TabsContent value="image" className="space-y-4">
+              <Tabs defaultValue="camera">
+                <TabsList className="grid w-full grid-cols-2">
+                  <TabsTrigger value="camera">Camera</TabsTrigger>
+                  <TabsTrigger value="upload">Upload</TabsTrigger>
+                </TabsList>
 
-                  <TabsContent value="camera" className="space-y-4">
-                    {!capturedImageUrl ? (
-                      <div className="relative bg-black rounded-lg overflow-hidden h-[300px]">
-                        <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
-                        <Button type="button" onClick={handleManualCapture} className="absolute bottom-4 left-1/2 transform -translate-x-1/2">
-                          <Camera className="w-4 h-4 mr-2" /> Capture
-                        </Button>
-                      </div>
-                    ) : (
-                      <div className="relative">
-                        <img src={capturedImageUrl} alt="Updated" className="w-full rounded-lg" />
-                        <Button type="button" variant="secondary" size="sm" onClick={resetCapture} className="absolute top-2 right-2">
-                          Retake
-                        </Button>
-                      </div>
-                    )}
-                  </TabsContent>
+                <TabsContent value="camera">
+                  {!capturedImageUrl ? (
+                    <div className="relative">
+                      <video
+                        ref={videoRef}
+                        autoPlay
+                        playsInline
+                        muted
+                        className="w-full rounded-lg bg-black"
+                      />
+                      <canvas ref={canvasRef} className="hidden" />
 
-                  <TabsContent value="upload" className="space-y-4">
-                    {!capturedImageUrl ? (
-                      <div className="border-2 border-dashed rounded-lg p-12 text-center">
-                        <Upload className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
-                        <Input type="file" accept="image/*" onChange={handleFileUpload} className="max-w-xs mx-auto" />
-                      </div>
-                    ) : (
-                      <div className="relative">
-                        <img src={capturedImageUrl} alt="Updated" className="w-full rounded-lg" />
-                        <Button type="button" variant="secondary" size="sm" onClick={resetCapture} className="absolute top-2 right-2">
-                          Change
-                        </Button>
-                      </div>
-                    )}
-                  </TabsContent>
-                </Tabs>
-              </TabsContent>
-
-              <TabsContent value="rooms" className="space-y-4">
-                <div className="border rounded-lg p-4 space-y-2 max-h-[400px] overflow-y-auto">
-                  {doorScans.map(door => (
-                    <div
-                      key={door._id}
-                      className="flex items-center justify-between p-2 hover:bg-accent rounded cursor-pointer"
-                      onClick={() => toggleRoomSelection(door._id)}
-                    >
-                      <div className="flex items-center gap-2">
-                        <Checkbox
-                          checked={selectedRooms.includes(door._id)}
-                          onCheckedChange={() => toggleRoomSelection(door._id)}
-                        />
-                        <DoorOpen className="w-4 h-4 text-muted-foreground" />
-                        <div>
-                          {/* {JSON.stringify(door, null, 2)}
-                            {JSON.stringify(rooms, null, 2)} */}
-                          <span>{door.name}</span>
-                          {
-                            door?.room_id && (
-                              <span className="text-xs text-muted-foreground">({rooms.find(r => r._id === door?.room_id)?.name})</span>
-                            )
-                          }
+                      {isCheckingLiveness && (
+                        <div className="absolute top-4 left-4 bg-blue-500 text-white px-3 py-1 rounded-full text-sm flex items-center gap-2">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Checking liveness...
                         </div>
+                      )}
+
+                      {livenessResult && !livenessResult.isLive && (
+                        <div className="absolute top-4 left-4 bg-red-500 text-white px-3 py-1 rounded-full text-sm flex items-center gap-2">
+                          <AlertTriangle className="w-4 h-4" />
+                          {livenessResult.message}
+                        </div>
+                      )}
+
+                      <Button
+                        onClick={handleManualCapture}
+                        disabled={isCheckingLiveness}
+                        className="absolute bottom-4 left-1/2 -translate-x-1/2">
+                        <Camera className="w-4 h-4 mr-2" />
+                        Capture
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      <img src={capturedImageUrl} alt="Captured" className="w-full rounded-lg" />
+                      <Button
+                        onClick={() => {
+                          resetCapture();
+                          startCamera(false);
+                        }}
+                        variant="secondary"
+                        className="absolute bottom-4 left-1/2 -translate-x-1/2">
+                        <RefreshCw className="w-4 h-4 mr-2" />
+                        Retake
+                      </Button>
+                    </div>
+                  )}
+                </TabsContent>
+
+                <TabsContent value="upload">
+                  {!capturedImageUrl ? (
+                    <div
+                      onClick={() => fileInputRef.current?.click()}
+                      className="border-2 border-dashed rounded-lg p-12 text-center cursor-pointer hover:border-primary transition-colors"
+                    >
+                      <Upload className="w-12 h-12 mx-auto mb-4 text-muted-foreground" />
+                      <p className="text-sm text-muted-foreground">Click to upload</p>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/*"
+                        onChange={handleFileUpload}
+                        className="hidden"
+                      />
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      <img src={capturedImageUrl} alt="Uploaded" className="w-full rounded-lg" />
+                      <Button
+                        onClick={() => {
+                          resetCapture();
+                          if (fileInputRef.current) fileInputRef.current.value = '';
+                        }}
+                        variant="secondary"
+                        className="absolute bottom-4 left-1/2 -translate-x-1/2">
+                        <Upload className="w-4 h-4 mr-2" />
+                        Change
+                      </Button>
+                    </div>
+                  )}
+                </TabsContent>
+              </Tabs>
+            </TabsContent>
+
+            <TabsContent value="rooms">
+              <div className="space-y-2 max-h-96 overflow-y-auto">
+                {doorScans.map(door => (
+                  <div
+                    key={door._id}
+                    onClick={() => toggleRoomSelection(door._id)}
+                    className={`p-3 rounded-lg border-2 cursor-pointer transition-all ${selectedRooms.includes(door._id)
+                      ? 'border-primary bg-primary/10'
+                      : 'border-gray-200 hover:border-gray-300'
+                      }`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        checked={selectedRooms.includes(door._id)}
+                        onCheckedChange={() => toggleRoomSelection(door._id)}
+                      />
+                      <div className="flex-1">
+                        {door.name}
+                        {door?.room_id && (
+                          <span className="text-sm text-muted-foreground ml-2">
+                            ({rooms.find(r => r._id === door?.room_id)?.name})
+                          </span>
+                        )}
                       </div>
                     </div>
-                  ))}
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  {/* {selectedRooms.length} door scan(s) selectedd */}
-                </p>
-              </TabsContent>
-            </Tabs>
-
-            <canvas ref={canvasRef} style={{ display: 'none' }} />
-          </div>
+                  </div>
+                ))}
+              </div>
+            </TabsContent>
+          </Tabs>
 
           <DialogFooter>
             <Button variant="outline" onClick={() => setIsEditDialogOpen(false)}>Cancel</Button>
@@ -946,21 +1266,17 @@ export default function FaceRecognitionPage() {
         </DialogContent>
       </Dialog>
 
-      {/* VIEW IMAGE DIALOG */}
       <Dialog open={isViewImageDialogOpen} onOpenChange={setIsViewImageDialogOpen}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent>
           <DialogHeader>
             <DialogTitle>{users.find(u => u._id === viewImageFace?.user_id)?.name}</DialogTitle>
-            <DialogDescription>{users.find(u => u._id === viewImageFace?.user_id)?.email}</DialogDescription>
+            <DialogDescription>
+              {users.find(u => u._id === viewImageFace?.user_id)?.email}
+            </DialogDescription>
           </DialogHeader>
           {viewImageFace && (
-            <div className="py-4" style={{ width: "100%", maxHeight: "500px", overflow: "auto" }}>
-              <img
-                src={`${process.env.NEXT_PUBLIC_API_URL}${viewImageFace?.image_path}`}
-                alt={viewImageFace.name}
-                className="w-full rounded-lg"
-                crossOrigin='anonymous'
-              />
+            <div className="flex justify-center">
+              <User className="w-32 h-32 text-muted-foreground" />
             </div>
           )}
         </DialogContent>
@@ -969,103 +1285,83 @@ export default function FaceRecognitionPage() {
   );
 }
 
-
-// Result Component
 function VerificationResult({ imageUrl, result, selectedDoors, onToggleDoor, onReset, onUnlock, loading }: any) {
   if (!result.matched) {
     return (
-      <div className="space-y-4">
-        <div className="relative">
-          <img src={imageUrl} alt="Unrecognized" className="w-full rounded-lg border-2 border-red-500" />
-          <div className="absolute top-4 right-4 bg-red-500 text-white px-3 py-1 rounded-full flex items-center shadow-lg">
-            <X className="w-4 h-4 mr-1" /> Unrecognized
-          </div>
+      <div className="text-center space-y-4">
+        <div className="w-20 h-20 bg-red-100 rounded-full flex items-center justify-center mx-auto">
+          <X className="w-10 h-10 text-red-600" />
         </div>
-
-        <Card className="border-red-200">
-          <CardContent className="pt-6 space-y-4">
-            <div className="text-center">
-              <h3 className="text-xl font-bold text-red-600">Face Not Recognized</h3>
-              <p className="text-muted-foreground mt-2">{result.message || 'This face is not enrolled in the system.'}</p>
-            </div>
-
-            <div className="flex gap-3">
-              <Button variant="outline" onClick={onReset} className="flex-1">
-                <RefreshCw className="w-4 h-4 mr-2" /> Try Again
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+        <div>
+          <h3 className="text-xl font-semibold mb-2">Unrecognized</h3>
+          <p className="text-lg font-semibold mb-1">Face Not Recognized</p>
+          <p className="text-sm text-muted-foreground">
+            {result.message || 'This face is not enrolled in the system.'}
+          </p>
+        </div>
+        <Button onClick={onReset} variant="outline">
+          <RefreshCw className="w-4 h-4 mr-2" />
+          Try Again
+        </Button>
       </div>
     );
   }
 
-  const doorsByRoom = result.available_doors?.reduce((acc: any, door: any) => {
-    const roomName = door.room?.name || 'No Room';
-    if (!acc[roomName]) acc[roomName] = [];
-    acc[roomName].push(door);
-    return acc;
-  }, {});
-
-  // Get the selected door for display
   const selectedDoor = result.available_doors?.find((d: any) => d._id === selectedDoors[0]);
 
   return (
     <div className="space-y-4">
-      <div className="relative">
-        <img src={imageUrl} alt="Matched" className="w-full rounded-lg border-2 border-green-500" />
-        <div className="absolute top-4 right-4 bg-green-500 text-white px-3 py-1 rounded-full flex items-center shadow-lg">
-          <Check className="w-4 h-4 mr-1" /> Matched
+      <div className="text-center space-y-2">
+        <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto">
+          <Check className="w-10 h-10 text-green-600" />
+        </div>
+        <div>
+          <h3 className="text-xl font-semibold mb-2">Matched</h3>
+          <p className="text-lg font-semibold">{result.name}</p>
+          <p className="text-sm text-muted-foreground">{result.email}</p>
+          <p className="text-xs text-muted-foreground mt-1">
+            Confidence: {result.confidence}%
+          </p>
         </div>
       </div>
 
-      <Card>
-        <CardContent className="pt-6 space-y-4">
-          <div className="text-center">
-            <h3 className="text-xl font-bold">{result.name}</h3>
-            <p className="text-muted-foreground">{result.email}</p>
-            <Badge variant="outline" className="mt-2">Confidence: {result.confidence}%</Badge>
-          </div>
-
-          <div className="border-t pt-4">
-            <p className="mb-3 font-medium flex items-center"><DoorOpen className="w-4 h-4 mr-2" /> Door Access</p>
-            {selectedDoor && (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-sm font-semibold text-muted-foreground">
-                  <MapPin className="w-3 h-3" />
-                  {selectedDoor.room?.name || 'No Room'}
+      <div>
+        <h4 className="font-semibold mb-2">Door Access</h4>
+        {selectedDoor && (
+          <Card>
+            <CardContent className="pt-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="font-medium">{selectedDoor.room?.name || 'No Room'}</p>
+                  <p className="text-sm text-muted-foreground">{selectedDoor.name}</p>
+                  <Badge variant={selectedDoor.is_locked ? "destructive" : "default"} className="mt-1">
+                    {selectedDoor.is_locked ? "Locked" : "Unlocked"}
+                  </Badge>
                 </div>
-                <div className="flex items-center justify-between p-3 border-2 border-green-500 rounded bg-green-50">
-                  <div className="flex items-center space-x-2">
-                    <span className="text-sm font-medium">{selectedDoor.name}</span>
-                    <Badge variant={selectedDoor.is_locked ? "destructive" : "default"}>
-                      {selectedDoor.is_locked ? "Locked" : "Unlocked"}
-                    </Badge>
-                  </div>
-                  {selectedDoor.is_locked ? <Lock className="w-4 h-4 text-red-500" /> : <DoorOpen className="w-4 h-4 text-green-500" />}
+                <div>
+                  {selectedDoor.is_locked ? <Lock className="w-6 h-6" /> : <DoorOpen className="w-6 h-6" />}
                 </div>
               </div>
-            )}
-          </div>
+            </CardContent>
+          </Card>
+        )}
+      </div>
 
-          <div className={`border rounded-lg p-4 text-center ${loading ? 'bg-blue-50 border-blue-200' : 'bg-green-50 border-green-200'}`}>
-            {loading ? (
-              <>
-                <div className="flex items-center justify-center gap-2 text-blue-700 font-medium">
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                  Controlling door...
-                </div>
-                <p className="text-sm text-blue-600 mt-1">Please wait...</p>
-              </>
-            ) : (
-              <>
-                <p className="text-green-700 font-medium">✓ Door action completed automatically</p>
-                <p className="text-sm text-green-600 mt-1">This dialog will close in a moment...</p>
-              </>
-            )}
+      {loading ? (
+        <div className="text-center space-y-2">
+          <Loader2 className="w-8 h-8 animate-spin mx-auto text-primary" />
+          <p className="text-sm font-medium">Controlling door...</p>
+          <p className="text-xs text-muted-foreground">Please wait...</p>
+        </div>
+      ) : (
+        <div className="text-center space-y-2">
+          <div className="flex items-center justify-center gap-2 text-green-600">
+            <Check className="w-5 h-5" />
+            <p className="text-sm font-medium">✓ Door action completed automatically</p>
           </div>
-        </CardContent>
-      </Card>
+          <p className="text-xs text-muted-foreground">This dialog will close in a moment...</p>
+        </div>
+      )}
     </div>
   );
 }
